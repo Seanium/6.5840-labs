@@ -45,12 +45,20 @@ type Task struct {
 	StartTime time.Time
 }
 
+type SchedulePhase int
+
+const (
+	MapPhase SchedulePhase = iota
+	ReducePhase
+)
+
 type Coordinator struct {
 	// Your definitions here.
 	nMap int
 	nReduce int
 	mapTasks    []Task
 	reduceTasks []Task
+	phase SchedulePhase
 	mu sync.Mutex
 }
 
@@ -73,25 +81,33 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 	reply.NReduce = c.nReduce
 	reply.NMap = c.nMap
 
-	for i := range c.mapTasks {
-		if c.mapTasks[i].Status == Idle {
-			debug("coordinator: find new map task %v status %v\n", c.mapTasks[i].ID, c.mapTasks[i].Status)
-			c.mapTasks[i].Status = InProgress
-			c.mapTasks[i].StartTime = time.Now()	// 记录任务开始时间
-			reply.Task = c.mapTasks[i]
-			return nil
-		}
-	}
-
-	for i := range c.mapTasks {
-		if c.mapTasks[i].Status != Completed {
-			reply.Task = Task{
-				Type: Wait,
+	if c.phase == MapPhase {
+		// 找到新的map任务
+		for i := range c.mapTasks {
+			if c.mapTasks[i].Status == Idle {
+				debug("coordinator: find new map task %v status %v\n", c.mapTasks[i].ID, c.mapTasks[i].Status)
+				c.mapTasks[i].Status = InProgress
+				c.mapTasks[i].StartTime = time.Now()	// 记录任务开始时间
+				reply.Task = c.mapTasks[i]
+				return nil
 			}
-			return nil
 		}
+
+		// 等待所有map任务完成
+		for i := range c.mapTasks {
+			if c.mapTasks[i].Status != Completed {
+				reply.Task = Task{
+					Type: Wait,
+				}
+				return nil
+			}
+		}
+
+		// Map阶段完成，进入Reduce阶段
+		c.phase = ReducePhase
 	}
 
+	// 找到新的reduce任务
 	for i := range c.reduceTasks {
 		if c.reduceTasks[i].Status == Idle {
 			debug("coordinator: find new reduce task %v status %v\n", c.reduceTasks[i].ID, c.reduceTasks[i].Status)
@@ -100,6 +116,8 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 			return nil
 		}
 	}
+
+	// 所有任务均已完成
 	debug("coordinator: find no tasks remaining\n")
 	reply.Task = Task{
 		Type: Wait,		// 让worker等待coordinator退出
@@ -130,16 +148,19 @@ func (c *Coordinator) checkTimeoutTasks() {
 		time.Sleep(time.Second)	// 每秒检查一次
 
 		c.mu.Lock()
-		for i := range c.mapTasks {
-			if c.mapTasks[i].Status == InProgress && time.Since(c.mapTasks[i].StartTime) > 10*time.Second {
-				debug("coordinator: map task %v timeout\n", c.mapTasks[i].ID)
-				c.mapTasks[i].Status = Idle
+		if c.phase == MapPhase {
+			for i := range c.mapTasks {
+				if c.mapTasks[i].Status == InProgress && time.Since(c.mapTasks[i].StartTime) > 10*time.Second {
+					debug("coordinator: map task %v timeout\n", c.mapTasks[i].ID)
+					c.mapTasks[i].Status = Idle
+				}
 			}
-		}
-		for i := range c.reduceTasks {
-			if c.reduceTasks[i].Status == InProgress && time.Since(c.reduceTasks[i].StartTime) > 10*time.Second {
-				debug("coordinator: reduce task %v timeout\n", c.reduceTasks[i].ID)
-				c.reduceTasks[i].Status = Idle
+		} else {
+			for i := range c.reduceTasks {
+				if c.reduceTasks[i].Status == InProgress && time.Since(c.reduceTasks[i].StartTime) > 10*time.Second {
+					debug("coordinator: reduce task %v timeout\n", c.reduceTasks[i].ID)
+					c.reduceTasks[i].Status = Idle
+				}
 			}
 		}
 		c.mu.Unlock()
@@ -192,6 +213,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nReduce: nReduce,
 		mapTasks: make([]Task, len(files)),
 		reduceTasks: make([]Task, nReduce),
+		phase: MapPhase,
 		mu: sync.Mutex{},
 	}
 	for i := range c.mapTasks {
