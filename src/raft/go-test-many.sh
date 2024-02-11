@@ -107,7 +107,7 @@ cleanup() {
 	for pid in "${waits[@]}"; do
 		kill "$pid"
 		wait "$pid"
-		rm -rf "test-${is[0]}.err" "test-${is[0]}.log"
+		rm -rf "logs/test-${is[0]}.err" "logs/test-${is[0]}.log"
 		is=("${is[@]:1}")
 	done
 	exit 0
@@ -131,10 +131,10 @@ for i in $(seq "$((success+failed+1))" "$runs"); do
 
 	# Run the tester, passing -test.run if necessary
 	if [[ -z "$test" ]]; then
-		./tester -test.v 2> "test-${i}.err" > "test-${i}.log" &
+		./tester -test.v 2> "logs/test-${i}.err" > "logs/test-${i}.log" &
 		pid=$!
 	else
-		./tester -test.run "$test" -test.v 2> "test-${i}.err" > "test-${i}.log" &
+		./tester -test.run "$test" -test.v 2> "logs/test-${i}.err" > "logs/test-${i}.log" &
 		pid=$!
 	fi
 
