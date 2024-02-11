@@ -13,6 +13,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// Receiver implementation rule 1
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -45,7 +46,7 @@ func (rf *Raft) sendAppendsL(heartbeat bool) {
 }
 
 func (rf *Raft) sendAppendL(peer int, heartbeat bool) {
-	args := AppendEntriesArgs{}
+	args := AppendEntriesArgs{Term: rf.currentTerm}
 	go func() {
 		reply := AppendEntriesReply{}
 		ok := rf.sendAppendEntries(peer, &args, &reply)

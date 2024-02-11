@@ -116,7 +116,7 @@ func (rf *Raft) setElectionTime() {
 	ms := 1000 + (rand.Int63() % 300)
 	t = t.Add(time.Duration(ms) * time.Millisecond)
 	rf.electionTime = t
-	// DPrintf("%v: setElectionTime: %v", rf.me, rf.electionTime)
+	DPrintf("%v: setElectionTime: %v", rf.me, rf.electionTime)
 }
 
 func (rf *Raft) newTermL(term int) {
