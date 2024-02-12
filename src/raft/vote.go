@@ -99,12 +99,14 @@ func (rf *Raft) sendRequestVoteAndCountVotes(peer int, args *RequestVoteArgs, vo
 		if reply.VoteGranted {
 			*votes += 1
 			if *votes > len(rf.peers)/2 {
-				rf.becomeLeaderL()
-				// Once a candidate wins an election, it
-				// becomes leader. It then sends heartbeat messages to all of
-				// the other servers to establish its authority and prevent new
-				// elections.
-				rf.sendAppendsL(true)
+				if rf.currentTerm == args.Term {
+					rf.becomeLeaderL()
+					// Once a candidate wins an election, it
+					// becomes leader. It then sends heartbeat messages to all of
+					// the other servers to establish its authority and prevent new
+					// elections.
+					rf.sendAppendsL(true)
+				}
 			}
 		}
 	}
@@ -116,7 +118,7 @@ func (rf *Raft) setElectionTime() {
 	ms := 1000 + (rand.Int63() % 300)
 	t = t.Add(time.Duration(ms) * time.Millisecond)
 	rf.electionTime = t
-	DPrintf("%v: setElectionTime: %v", rf.me, rf.electionTime)
+	// DPrintf("%v: setElectionTime: %v", rf.me, rf.electionTime)
 }
 
 func (rf *Raft) newTermL(term int) {
