@@ -89,6 +89,12 @@ type Raft struct {
 	// Volatile state on leaders
 	nextIndex  []int
 	matchIndex []int
+
+	// snapshot
+	lastIncludedIndex int
+	lastIncludedTerm  int
+	snapshot          []byte
+	installMsg        ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -127,8 +133,10 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	rf.persister.Save(raftstate, rf.persister.ReadSnapshot())
 }
 
 // restore previously persisted state.
@@ -154,24 +162,23 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log Log
+	var lastIncludedIndex int
+	var lastIncludedTerm int
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
-		d.Decode(&log) != nil {
+		d.Decode(&log) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil {
 		log2.Fatalf("%d: readPersist error!", rf.me)
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.lastApplied = lastIncludedIndex
+		rf.commitIndex = lastIncludedIndex
 	}
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the Log through (and including)
-// that index. Raft should now trim its Log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -290,6 +297,11 @@ func (rf *Raft) applier() {
 				rf.mu.Lock()
 				DPrintf("%v: apply msg %v", rf.me, msg)
 			}
+		} else if len(rf.installMsg.Snapshot) > 0 {
+			rf.mu.Unlock()
+			rf.applyCh <- rf.installMsg
+			rf.mu.Lock()
+			rf.installMsg = ApplyMsg{}
 		} else {
 			rf.applyCond.Wait()
 		}
@@ -325,8 +337,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 
+	rf.snapshot = persister.ReadSnapshot()
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.snapshot = persister.ReadSnapshot()
 
 	go rf.applier()
 

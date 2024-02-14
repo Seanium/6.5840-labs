@@ -110,17 +110,55 @@ func (rf *Raft) sendAppendsL(heartbeat bool) {
 func (rf *Raft) sendAppendL(peer int, heartbeat bool) {
 	next := rf.nextIndex[peer]
 	if next <= rf.log.start() { // 跳过位置0的entry
-		next = rf.log.start() + 1
+		args := InstallSnapshotArgs{
+			Term:              rf.currentTerm,
+			LeaderId:          rf.me,
+			LastIncludedIndex: rf.lastIncludedIndex,
+			LastIncludedTerm:  rf.lastIncludedTerm,
+			Data:              rf.snapshot,
+		}
+		go func() {
+			reply := InstallSnapshotReply{}
+			ok := rf.sendInstallSnapshot(peer, &args, &reply)
+			if ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+
+				if reply.Term > rf.currentTerm {
+					rf.newTermL(reply.Term)
+					return
+				}
+				if rf.currentTerm != args.Term {
+					return
+				}
+				if args.LastIncludedIndex+1 > rf.nextIndex[peer] {
+					rf.nextIndex[peer] = args.LastIncludedIndex + 1
+				}
+				rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+			}
+		}()
+		return
 	}
-	args := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: next - 1,
-		PrevLogTerm:  rf.log.entry(next - 1).Term,
-		Entries:      make([]Entry, rf.log.lastindex()-next+1),
-		LeaderCommit: rf.commitIndex,
+	var args AppendEntriesArgs
+	if rf.log.lastindex() >= rf.nextIndex[peer] {
+		args = AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: next - 1,
+			PrevLogTerm:  rf.log.entry(next - 1).Term,
+			Entries:      make([]Entry, rf.log.lastindex()-next+1),
+			LeaderCommit: rf.commitIndex,
+		}
+		copy(args.Entries, rf.log.slice(next))
+	} else {
+		args = AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.log.lastindex(),
+			PrevLogTerm:  rf.log.entry(rf.log.lastindex()).Term,
+			LeaderCommit: rf.commitIndex,
+		}
 	}
-	copy(args.Entries, rf.log.slice(next))
 	if !heartbeat {
 		DPrintf("%v: send entry to %v, nextIndex[%v] = %v, args = %v, Log = %v",
 			rf.me, peer, peer, rf.nextIndex[peer], args, rf.log)
@@ -161,7 +199,7 @@ func (rf *Raft) processAppendReplyTermL(peer int, args *AppendEntriesArgs, reply
 		rf.advanceCommitL()
 	} else {
 		// slow catch up
-		rf.nextIndex[peer]--
+		// rf.nextIndex[peer]--
 
 		// quick catch up
 		if reply.FirstIndex == -1 {
