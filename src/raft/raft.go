@@ -56,9 +56,6 @@ const (
 	LEADER
 )
 
-type Entry struct {
-}
-
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -70,11 +67,24 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	applyCh   chan ApplyMsg
+	applyCond *sync.Cond
+
 	state        ServerState
 	electionTime time.Time
 
+	// Persistent state on all servers
 	currentTerm int
 	votedFor    int
+	log         Log
+
+	// Volatile state on all servers
+	commitIndex int
+	lastApplied int
+
+	// Volatile state on leaders
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -86,7 +96,7 @@ func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	
+
 	term = rf.currentTerm
 	isleader = rf.state == LEADER
 	return term, isleader
@@ -108,6 +118,7 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
 }
 
 // restore previously persisted state.
@@ -152,13 +163,24 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != LEADER {
+		return -1, rf.currentTerm, false
+	}
 
 	// Your code here (2B).
+	index := rf.log.lastindex() + 1
+	e := Entry{Term: rf.currentTerm, Command: command}
+	rf.log.append(e)
+	// Persist here
 
-	return index, term, isLeader
+	DPrintf("%v: add entry{term command} %v, index %v; lastindex = %v", rf.me, e, index, rf.log.lastindex())
+
+	rf.sendAppendsL(false)
+
+	return index, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -185,14 +207,20 @@ func (rf *Raft) requestVoteTicker() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		if time.Now().After(rf.electionTime) {
-			DPrintf("%v: voteTick nowTime: %v electionTime: %v\n", rf.me, time.Now(), rf.electionTime)
+			//DPrintf("%v: voteTick nowTime: %v electionTime: %v\n", rf.me, time.Now(), rf.electionTime)
 			rf.state = CANDIDATE
-			rf.currentTerm += 1
+			rf.currentTerm++
 			rf.votedFor = rf.me
+			// Persist here
 			rf.setElectionTime()
-			DPrintf("%v: start election for term %v", rf.me, rf.currentTerm)
+			DPrintf("%v: term %v start election", rf.me, rf.currentTerm)
 			votes := 1
-			args := RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me}
+			args := RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: rf.log.lastindex(),
+				LastLogTerm:  rf.log.entry(rf.log.lastindex()).Term,
+			}
 			for i := range rf.peers {
 				if i == rf.me {
 					continue
@@ -219,6 +247,30 @@ func (rf *Raft) appendEntriesTicker() {
 	}
 }
 
+func (rf *Raft) applier() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	for !rf.killed() {
+		if rf.lastApplied < rf.commitIndex {
+			for rf.lastApplied < rf.commitIndex {
+				rf.lastApplied++
+				msg := ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log.entry(rf.lastApplied).Command,
+					CommandIndex: rf.lastApplied,
+				}
+				rf.mu.Unlock()
+				rf.applyCh <- msg
+				rf.mu.Lock()
+				DPrintf("%v: apply msg %v", rf.me, msg)
+			}
+		} else {
+			rf.applyCond.Wait()
+		}
+	}
+}
+
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -236,12 +288,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
+
 	rf.state = FOLLOWER
 	rf.setElectionTime()
+
 	rf.votedFor = -1
+	rf.log = mkLogEmpty()
+
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	go rf.applier()
 
 	// start ticker goroutine to start elections
 	go rf.appendEntriesTicker()

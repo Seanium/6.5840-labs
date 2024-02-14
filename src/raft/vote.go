@@ -9,8 +9,10 @@ import (
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term        int
-	CandidateId int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
@@ -32,14 +34,24 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.newTermL(args.Term)
 	}
 
+	// For rule 2, compute leader restriction
+	myIndex := rf.log.lastindex()
+	myTerm := rf.log.entry(myIndex).Term
+	// If the logs have last entries with different terms, then
+	// the log with the later term is more up-to-date. If the logs
+	// end with the same term, then whichever log is longer is
+	// more up-to-date.
+	uptodate := (args.LastLogTerm == myTerm && args.LastLogIndex >= myIndex) || args.LastLogTerm > myTerm
+
 	if args.Term < rf.currentTerm {
 		// Rule 1. Reply false if term < currentTerm
 		reply.VoteGranted = false
-	} else if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && uptodate {
 		// Rule 2. If votedFor is null or candidateId, and candidate’s log is at
 		// least as up-to-date as receiver’s log, grant vote
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		// Persist here
 		// Rule for followers
 		rf.setElectionTime()
 	} else {
@@ -81,8 +93,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) becomeLeaderL() {
-	DPrintf("%v: becomeLeader for term %v\n", rf.me, rf.currentTerm)
+	DPrintf("%v: term %v become leader\n", rf.me, rf.currentTerm)
 	rf.state = LEADER
+	for i := range rf.matchIndex {
+		// for each server, index of the next log entry
+		// to send to that server (initialized to leader
+		// last log index + 1)
+		rf.nextIndex[i] = rf.log.lastindex() + 1
+	}
+	DPrintf("%v: initialize nextIndex = %v", rf.me, rf.nextIndex)
 }
 
 func (rf *Raft) sendRequestVoteAndCountVotes(peer int, args *RequestVoteArgs, votes *int) {
@@ -97,14 +116,15 @@ func (rf *Raft) sendRequestVoteAndCountVotes(peer int, args *RequestVoteArgs, vo
 			rf.newTermL(reply.Term)
 		}
 		if reply.VoteGranted {
-			*votes += 1
+			*votes++
 			if *votes > len(rf.peers)/2 {
+				// 保证与发起选举时处于同样的term
 				if rf.currentTerm == args.Term {
-					rf.becomeLeaderL()
 					// Once a candidate wins an election, it
 					// becomes leader. It then sends heartbeat messages to all of
 					// the other servers to establish its authority and prevent new
 					// elections.
+					rf.becomeLeaderL()
 					rf.sendAppendsL(true)
 				}
 			}
@@ -122,8 +142,9 @@ func (rf *Raft) setElectionTime() {
 }
 
 func (rf *Raft) newTermL(term int) {
-	DPrintf("%v: newTerm %v follower\n", rf.me, term)
+	DPrintf("%v: term %v become follower\n", rf.me, term)
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.state = FOLLOWER
+	// Persist here
 }
