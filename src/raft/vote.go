@@ -38,8 +38,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	myIndex := rf.log.lastindex()
 	myTerm := rf.log.entry(myIndex).Term
 	// If the logs have last entries with different terms, then
-	// the log with the later term is more up-to-date. If the logs
-	// end with the same term, then whichever log is longer is
+	// the Log with the later term is more up-to-date. If the logs
+	// end with the same term, then whichever Log is longer is
 	// more up-to-date.
 	uptodate := (args.LastLogTerm == myTerm && args.LastLogIndex >= myIndex) || args.LastLogTerm > myTerm
 
@@ -47,11 +47,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// Rule 1. Reply false if term < currentTerm
 		reply.VoteGranted = false
 	} else if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && uptodate {
-		// Rule 2. If votedFor is null or candidateId, and candidate’s log is at
-		// least as up-to-date as receiver’s log, grant vote
+		// Rule 2. If votedFor is null or candidateId, and candidate’s Log is at
+		// least as up-to-date as receiver’s Log, grant vote
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		// Persist here
+		rf.persist()
 		// Rule for followers
 		rf.setElectionTime()
 	} else {
@@ -96,9 +97,9 @@ func (rf *Raft) becomeLeaderL() {
 	DPrintf("%v: term %v become leader\n", rf.me, rf.currentTerm)
 	rf.state = LEADER
 	for i := range rf.matchIndex {
-		// for each server, index of the next log entry
+		// for each server, index of the next Log entry
 		// to send to that server (initialized to leader
-		// last log index + 1)
+		// last Log index + 1)
 		rf.nextIndex[i] = rf.log.lastindex() + 1
 	}
 	DPrintf("%v: initialize nextIndex = %v", rf.me, rf.nextIndex)
@@ -147,4 +148,5 @@ func (rf *Raft) newTermL(term int) {
 	rf.votedFor = -1
 	rf.state = FOLLOWER
 	// Persist here
+	rf.persist()
 }

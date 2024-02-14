@@ -8,16 +8,20 @@ package raft
 // rf = Make(...)
 //   create a new Raft server.
 // rf.Start(command interface{}) (index, term, isleader)
-//   start agreement on a new log entry
+//   start agreement on a new Log entry
 // rf.GetState() (term, isLeader)
 //   ask a Raft for its current term, and whether it thinks it is leader
 // ApplyMsg
-//   each time a new entry is committed to the log, each Raft peer
+//   each time a new entry is committed to the Log, each Raft peer
 //   should send an ApplyMsg to the service (or tester)
 //   in the same server.
 //
 
 import (
+	"6.5840/labgob"
+	"bytes"
+	log2 "log"
+
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -27,11 +31,11 @@ import (
 	"6.5840/labrpc"
 )
 
-// as each Raft peer becomes aware that successive log entries are
+// as each Raft peer becomes aware that successive Log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
 // CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
+// committed Log entry.
 //
 // in part 2D you'll want to send other kinds of messages (e.g.,
 // snapshots) on the applyCh, but set CommandValid to false for these
@@ -118,7 +122,13 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
-
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -139,22 +149,36 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log Log
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		log2.Fatalf("%d: readPersist error!", rf.me)
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
+// service no longer needs the Log through (and including)
+// that index. Raft should now trim its Log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
+// agreement on the next command to be appended to Raft's Log. if this
 // server isn't the leader, returns false. otherwise start the
 // agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
+// command will ever be committed to the Raft Log, since the leader
 // may fail or lose an election. even if the Raft instance has been killed,
 // this function should return gracefully.
 //
@@ -175,7 +199,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	e := Entry{Term: rf.currentTerm, Command: command}
 	rf.log.append(e)
 	// Persist here
-
+	rf.persist()
 	DPrintf("%v: add entry{term command} %v, index %v; lastindex = %v", rf.me, e, index, rf.log.lastindex())
 
 	rf.sendAppendsL(false)
@@ -212,6 +236,7 @@ func (rf *Raft) requestVoteTicker() {
 			rf.currentTerm++
 			rf.votedFor = rf.me
 			// Persist here
+			rf.persist()
 			rf.setElectionTime()
 			DPrintf("%v: term %v start election", rf.me, rf.currentTerm)
 			votes := 1

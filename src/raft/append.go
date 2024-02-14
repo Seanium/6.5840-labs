@@ -10,8 +10,9 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term       int
+	Success    bool
+	FirstIndex int // quick catch up for lab 2c
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -31,31 +32,45 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 收到心跳时更新选举时间
 	rf.setElectionTime()
 	reply.Term = rf.currentTerm
-	if args.PrevLogIndex > rf.log.lastindex() || rf.log.entry(args.PrevLogIndex).Term != args.PrevLogTerm {
-		// Reply false if log doesn’t contain an entry at prevLogIndex
-		// whose term matches prevLogTerm (§5.3)
+
+	// Reply false if Log doesn’t contain an entry at prevLogIndex
+	// whose term matches prevLogTerm (§5.3)
+	// quick catch up
+	if args.PrevLogIndex > rf.log.lastindex() {
+		reply.FirstIndex = -1
+		reply.Success = false
+		return
+	}
+	if rf.log.entry(args.PrevLogIndex).Term != args.PrevLogTerm {
+		conflictTerm := rf.log.entry(args.PrevLogIndex).Term
+		var i int
+		for i = args.PrevLogIndex; i > rf.log.start(); i-- {
+			e := rf.log.entry(i)
+			if e.Term != conflictTerm {
+				break
+			}
+		}
+		reply.FirstIndex = i + 1
 		reply.Success = false
 		return
 	}
 	reply.Success = true
 	if len(args.Entries) > 0 {
-		DPrintf("%v: merge before, log = %v", rf.me, rf.log)
+		DPrintf("%v: merge before, Log = %v", rf.me, rf.log)
 		rf.mergeLogL(args.PrevLogIndex+1, args.Entries)
-		DPrintf("%v: merge done, log = %v", rf.me, rf.log)
+		DPrintf("%v: merge done, Log = %v", rf.me, rf.log)
 	}
 	if args.LeaderCommit > rf.commitIndex {
 		//If leaderCommit > commitIndex, set commitIndex =
 		//min(leaderCommit, index of last new entry)
-		if args.LeaderCommit >= rf.log.lastindex() {
-			rf.commitIndex = rf.log.lastindex()
-		} else {
-			rf.commitIndex = args.LeaderCommit
-		}
+		rf.commitIndex = min(args.LeaderCommit, rf.log.lastindex())
 
 		if rf.commitIndex > rf.lastApplied {
 			rf.applyCond.Signal()
 		}
 	}
+	// Persist here
+	rf.persist()
 }
 
 func (rf *Raft) mergeLogL(startIndex int, entries []Entry) {
@@ -84,8 +99,8 @@ func (rf *Raft) sendAppendsL(heartbeat bool) {
 			continue
 		}
 		// Rule for leaders
-		// If last log index ≥ nextIndex for a follower: send
-		// AppendEntries RPC with log entries starting at nextIndex
+		// If last Log index ≥ nextIndex for a follower: send
+		// AppendEntries RPC with Log entries starting at nextIndex
 		if rf.log.lastindex() >= rf.nextIndex[i] || heartbeat {
 			rf.sendAppendL(i, heartbeat)
 		}
@@ -107,7 +122,7 @@ func (rf *Raft) sendAppendL(peer int, heartbeat bool) {
 	}
 	copy(args.Entries, rf.log.slice(next))
 	if !heartbeat {
-		DPrintf("%v: send entry to %v, nextIndex[%v] = %v, args = %v, log = %v",
+		DPrintf("%v: send entry to %v, nextIndex[%v] = %v, args = %v, Log = %v",
 			rf.me, peer, peer, rf.nextIndex[peer], args, rf.log)
 	}
 	go func() {
@@ -145,7 +160,22 @@ func (rf *Raft) processAppendReplyTermL(peer int, args *AppendEntriesArgs, reply
 		}
 		rf.advanceCommitL()
 	} else {
+		// slow catch up
 		rf.nextIndex[peer]--
+
+		// quick catch up
+		if reply.FirstIndex == -1 {
+			var i int
+			for i = args.PrevLogIndex; i > rf.log.start(); i-- {
+				e := rf.log.entry(i)
+				if e.Term != args.PrevLogTerm {
+					break
+				}
+			}
+			rf.nextIndex[peer] = min(i+1, rf.nextIndex[peer])
+		} else {
+			rf.nextIndex[peer] = min(reply.FirstIndex, rf.nextIndex[peer])
+		}
 	}
 }
 
@@ -157,7 +187,7 @@ func (rf *Raft) advanceCommitL() {
 			continue
 		}
 		// If there exists an N such that N > commitIndex, a majority
-		// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+		// of matchIndex[i] ≥ N, and Log[N].term == currentTerm:
 		// set commitIndex = N (§5.3, §5.4).
 		n := 1 // leader always matches
 		for i := 0; i < len(rf.peers); i++ {
@@ -174,4 +204,11 @@ func (rf *Raft) advanceCommitL() {
 
 func (rf *Raft) signalApplierL() {
 	rf.applyCond.Signal()
+}
+
+func min(a int, b int) int {
+	if a >= b {
+		return b
+	}
+	return a
 }
